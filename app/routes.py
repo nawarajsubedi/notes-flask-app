@@ -1,13 +1,23 @@
+import asyncio
+from datetime import datetime, timedelta
+
 from flask import Blueprint, request, jsonify, g
 from app.models import Note, User
 from app.extensions import db
-from app.schemas import NoteSchema
+from app.schemas import NoteSchema, UserSchema
+import pytz
+
+# from app.services.notes_background_service import enqueue_email_task
+from app.services.notes_background_service import schedule_notes_email_remainder
 from app.utils import generate_jwt_token, parse_datetime, token_required
 from app.services import note_service
 
+# from app.extensions import JobQueue
+# from app.workers.email_remainder import init_queue
 
 main_bp = Blueprint("main", __name__)
 note_schema = NoteSchema(many=True)
+user_schema = UserSchema(many=True)
 
 
 @main_bp.route("/notes")
@@ -144,10 +154,37 @@ def set_notes_remainder(note_id):
     note_schema = NoteSchema()
     updated_note_data = note_schema.dump(updated_note)
 
+    timezone = pytz.timezone("Asia/Kathmandu")  # Replace with your timezone
+
+    send_time = timezone.localize(datetime.now()) + timedelta(seconds=10)
+
+    # send_time = datetime.now() + timedelta(seconds=5)  # Schedule for 5 minutes later
+
+    result = schedule_notes_email_remainder.apply_async(
+        kwargs={
+            "email": updated_note.email,
+            "title": updated_note.title,
+            "content": updated_note.content,
+        },
+        eta=send_time,  # updated_note.reminder_time
+    )
+
+    print(f"result:{result}")
     return (
-        jsonify({"message": "Note remainder updated successfully!", "data": updated_note_data}),
+        jsonify(
+            {
+                "message": "Note remainder updated successfully!",
+                "data": updated_note_data,
+            }
+        ),
         200,
     )
+
+
+# @celery.task
+# def send_email(email, notes):
+#     # Logic to send email
+#     print(f"Sending email to {email} with notes {notes}")
 
 
 @main_bp.route("/notes/<int:note_id>", methods=["DELETE"])
@@ -176,8 +213,6 @@ def delete_note(note_id: int):
         return jsonify({"message": "Note deleted successfully!"}), 200
     else:
         return jsonify({"error": "Note not found or not authorized to delete"}), 404
-
-    update_schedule_email
 
 
 @main_bp.route("/register", methods=["POST"])
@@ -219,6 +254,14 @@ def login():
         return jsonify({"message": "Invalid username or password"}), 401
 
     token = generate_jwt_token(user.id)
-
-    # Normally, you would generate a JWT token or session here
-    return jsonify({"message": "Login successful", "token": token}), 200
+    user_schema = UserSchema()
+    return (
+        jsonify(
+            {
+                "message": "Login successful",
+                "user": user_schema.dump(user),
+                "token": token,
+            }
+        ),
+        200,
+    )
