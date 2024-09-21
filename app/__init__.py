@@ -1,3 +1,4 @@
+import celery
 from flask import Flask
 from flask_cors import CORS
 from celery import Celery, Task
@@ -24,7 +25,6 @@ def create_app(config_class=Config):
     # Configure CORS
     CORS(app)
 
-    # Initialize database and migrations
     db.init_app(app)
     migrate.init_app(app, db)
 
@@ -39,6 +39,13 @@ def celery_init_app(app: Flask) -> Celery:
         def __call__(self, *args: object, **kwargs: object) -> object:
             with app.app_context():
                 return self.run(*args, **kwargs)
+
+    class ContextTask(celery.Task):
+        def __call__(self, *args, **kwargs):
+            with app.app_context():
+                return self.run(*args, **kwargs)
+
+    celery.Task = ContextTask
 
     celery_app = Celery(app.name, task_cls=FlaskTask)
     celery_app.config_from_object(app.config["CELERY"])

@@ -1,47 +1,50 @@
-import asyncio
-from datetime import datetime, timedelta
-
 from flask import Blueprint, request, jsonify, g
-from app.models import Note, User
-from app.extensions import db
-from app.schemas import NoteSchema, UserSchema
-import pytz
 
-# from app.services.notes_background_service import enqueue_email_task
+from app.utils import (
+    create_response,
+    generate_jwt_token,
+    parse_datetime,
+    token_required,
+)
+from app.schemas import NoteSchema, UserSchema
 from app.services.notes_background_service import schedule_notes_email_remainder
-from app.utils import generate_jwt_token, parse_datetime, token_required
+from app.services.user_service import authenticate_user, register_user
 from app.services import note_service
 
-# from app.extensions import JobQueue
-# from app.workers.email_remainder import init_queue
 
 main_bp = Blueprint("main", __name__)
 note_schema = NoteSchema(many=True)
 user_schema = UserSchema(many=True)
 
 
-@main_bp.route("/notes")
+@main_bp.route("/notes", methods=["GET"])
 @token_required
 def get_all_notes():
     user = g.user
     try:
-        notes = note_service.get_notes(user_id=user.id)
+        search_content = request.args.get("search_content")
+        notes = note_service.get_notes(user_id=user.id, search_content=search_content)
         notes_data = note_schema.dump(notes)
-
-        return (
-            jsonify({"data": notes_data}),
-            200,
+        return create_response("Notes retrieved successfully", 200, data=notes_data)
+    except Exception as e:
+        return create_response(
+            "An error occurred while retrieving notes.", 500, error=str(e)
         )
 
+
+@main_bp.route("/notes/<int:note_id>", methods=["GET"])
+@token_required
+def get_note(note_id):
+    user = g.user
+    try:
+        note = note_service.get_note_by_id(note_id=note_id, user_id=user.id)
+        if note:
+            note_data = NoteSchema().dump(note)
+            return create_response("Note retrieved successfully", 200, data=note_data)
+        return create_response("Note not found", 404)
     except Exception as e:
-        return (
-            jsonify(
-                {
-                    "message": "An error occurred while creating the note.",
-                    "error": str(e),
-                }
-            ),
-            500,
+        return create_response(
+            "An error occurred while retrieving the note.", 500, error=str(e)
         )
 
 
@@ -51,168 +54,86 @@ def save_notes():
     user = g.user
     try:
         json_data = request.get_json()
-        new_note = Note(
-            title=json_data.get("title"),
-            content=json_data.get("content"),
+        new_note = note_service.create_note(
+            title=json_data.get("title", ""),
+            content=json_data.get("content", ""),
             user_id=user.id,
         )
-        note_service.save_notes(new_note)
-        note_schema = NoteSchema()
-        return (
-            jsonify(
-                {
-                    "message": "Note created successfully!",
-                    "data": note_schema.dump(new_note),
-                }
-            ),
-            201,
-        )
-
+        note_data = NoteSchema().dump(new_note)
+        return create_response("Note created successfully", 201, data=note_data)
     except Exception as e:
-        return (
-            jsonify(
-                {
-                    "message": "An error occurred while creating the note.",
-                    "error": str(e),
-                }
-            ),
-            500,
+        return create_response(
+            "An error occurred while creating the note.", 500, error=str(e)
         )
 
 
 @main_bp.route("/notes/<int:note_id>", methods=["PUT"])
 @token_required
 def update_note(note_id):
-    """
-    Update an existing note by its ID.
-    """
     user = g.user
-
     json_data = request.get_json()
-
-    if not json_data or not json_data.get("title") or not json_data.get("content"):
-        return (
-            jsonify({"message": "Invalid input. Title and content are required."}),
-            400,
+    try:
+        updated_note = note_service.update_note(
+            note_id=note_id,
+            user_id=user.id,
+            title=json_data.get("title"),
+            content=json_data.get("content"),
+        )
+        updated_note_data = NoteSchema().dump(updated_note)
+        return create_response("Note updated successfully", 200, data=updated_note_data)
+    except Exception as e:
+        return create_response(
+            "An error occurred while updating the note.", 500, error=str(e)
         )
 
-    note = note_service.get_note_by_id(note_id, user.id)
 
-    if not note:
-        return (
-            jsonify(
-                {"message": "Note not found or you don't have permission to edit it."}
-            ),
-            404,
-        )
-
-    updated_note = note_service.update_notes(
-        note, json_data["title"], json_data["content"]
-    )
-
-    # Serialize the updated note
-    note_schema = NoteSchema()
-    updated_note_data = note_schema.dump(updated_note)
-
-    # Return the response
-    return (
-        jsonify({"message": "Note updated successfully!", "data": updated_note_data}),
-        200,
-    )
-
-
-@main_bp.route("/notes/<int:note_id>/set-remainder", methods=["POST"])
+@main_bp.route("/notes/<int:note_id>/set-remainder", methods=["PUT"])
 @token_required
 def set_notes_remainder(note_id):
-    """
-    Update an existing note remainder by its ID.
-    """
     user = g.user
-
     json_data = request.get_json()
-
-    # if not json_data or not json_data.get("title") or not json_data.get("content"):
-    #     return (
-    #         jsonify({"message": "Invalid input. Title and content are required."}),
-    #         400,
-    #     )
-
-    note = note_service.get_note_by_id(note_id, user.id)
-
-    if not note:
-        return (
-            jsonify(
-                {"message": "Note not found or you don't have permission to edit it."}
-            ),
-            404,
+    try:
+        updated_note = note_service.set_note_remainder(
+            note_id=note_id,
+            user_id=user.id,
+            email=json_data["email"],
+            remainder_time=parse_datetime(json_data["remainder_time"]),
         )
 
-    updated_note = note_service.update_schedule_email(
-        note, json_data["email"], parse_datetime(json_data["remainder_time"])
-    )
+        note_schema = NoteSchema()
+        updated_note_data = note_schema.dump(updated_note)
+        schedule_notes_email_remainder.apply_async(
+            kwargs={
+                "email": json_data["email"],
+                "title": updated_note.title,
+                "content": updated_note.content,
+            },
+            eta=updated_note.remainder_time,
+        )
 
-    note_schema = NoteSchema()
-    updated_note_data = note_schema.dump(updated_note)
-
-    timezone = pytz.timezone("Asia/Kathmandu")  # Replace with your timezone
-
-    send_time = timezone.localize(datetime.now()) + timedelta(seconds=10)
-
-    # send_time = datetime.now() + timedelta(seconds=5)  # Schedule for 5 minutes later
-
-    result = schedule_notes_email_remainder.apply_async(
-        kwargs={
-            "email": updated_note.email,
-            "title": updated_note.title,
-            "content": updated_note.content,
-        },
-        eta=send_time,  # updated_note.reminder_time
-    )
-
-    print(f"result:{result}")
-    return (
-        jsonify(
-            {
-                "message": "Note remainder updated successfully!",
-                "data": updated_note_data,
-            }
-        ),
-        200,
-    )
-
-
-# @celery.task
-# def send_email(email, notes):
-#     # Logic to send email
-#     print(f"Sending email to {email} with notes {notes}")
+        return create_response(
+            "Note remainder updated successfully", 200, data={"note": updated_note_data}
+        )
+    except Exception as e:
+        return create_response(
+            "An error occurred while updating the note remainder.", 500, error=str(e)
+        )
 
 
 @main_bp.route("/notes/<int:note_id>", methods=["DELETE"])
 @token_required
 def delete_note(note_id: int):
-    """
-    Delete a note by its ID.
-    :param note_id: ID of the note to delete
-    :return: JSON response with success or failure message
-    """
-    user = g.user  # Get the user object from the token
-
-    note = note_service.get_note_by_id(note_id, user.id)
-
-    if not note:
-        return (
-            jsonify(
-                {"message": "Note not found or you don't have permission to edit it."}
-            ),
-            404,
+    user = g.user
+    try:
+        success = note_service.delete_note(note_id=note_id, user_id=user.id)
+        if success:
+            return create_response("Note deleted successfully", 200)
+        else:
+            return create_response("Note not found or not authorized to delete", 404)
+    except Exception as e:
+        return create_response(
+            "An error occurred while deleting the note.", 500, error=str(e)
         )
-
-    success = note_service.delete_note_by_id(note_id=note_id)
-
-    if success:
-        return jsonify({"message": "Note deleted successfully!"}), 200
-    else:
-        return jsonify({"error": "Note not found or not authorized to delete"}), 404
 
 
 @main_bp.route("/register", methods=["POST"])
@@ -223,21 +144,10 @@ def register():
     password = data.get("password")
 
     if not username or not email or not password:
-        return jsonify({"message": "Missing data"}), 400
+        return create_response("Missing data", 400)
 
-    existing_user = User.query.filter_by(username=username).first()
-    if existing_user:
-        return jsonify({"message": "User already exists"}), 400
-
-    new_user = User(username=username, email=email)
-    new_user.set_password(password)
-
-    print(f"password: {len(new_user.password_hash)}: {new_user.password_hash}")
-
-    db.session.add(new_user)
-    db.session.commit()
-
-    return jsonify({"message": "User created"}), 201
+    response, status_code = register_user(username, email, password)
+    return create_response(response["message"], status_code)
 
 
 @main_bp.route("/login", methods=["POST"])
@@ -245,23 +155,18 @@ def login():
     data = request.get_json()
     username = data.get("username")
     password = data.get("password")
-    print(f"username: {username}, password:{password}")
-    if not username or not password:
-        return jsonify({"message": "Missing data"}), 400
 
-    user = User.query.filter_by(username=username).first()
-    if user is None or not user.check_password(password):
-        return jsonify({"message": "Invalid username or password"}), 401
+    if not username or not password:
+        return create_response("Missing data", 400)
+
+    user, error = authenticate_user(username, password)
+    if error:
+        return create_response(error["message"], 401)
 
     token = generate_jwt_token(user.id)
     user_schema = UserSchema()
-    return (
-        jsonify(
-            {
-                "message": "Login successful",
-                "user": user_schema.dump(user),
-                "token": token,
-            }
-        ),
-        200,
+    user_data = user_schema.dump(user)
+
+    return create_response(
+        "Login successful", 200, data={"user": user_data, "token": token}
     )

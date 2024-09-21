@@ -1,56 +1,66 @@
-from datetime import datetime
-from app.extensions import db
 from app.models import Note
+from app.extensions import db
+from sqlalchemy import or_
 
-def get_note_by_id(note_id, user_id):
-    """
-    Fetch a note by its ID and user ID.
-    """
-    note = Note.query.filter_by(id=note_id, user_id=user_id).first()
-    return note
 
-def save_notes(note: Note):
-    db.session.add(note)
-    db.session.commit()
-    return note
-
-def get_notes(user_id: int):
-    notes = Note.query.filter_by(user_id=user_id).all()
+def get_notes(user_id, search_content=None):
+    """Retrieve all notes for a user, with optional search by content."""
+    if search_content:
+        notes = (
+            Note.query.filter_by(user_id=user_id)
+            .filter(
+                or_(
+                    Note.title.ilike(f"%{search_content}%"),
+                    Note.content.ilike(f"%{search_content}%"),
+                )
+            )
+            .all()
+        )
+    else:
+        notes = Note.query.filter_by(user_id=user_id).all()
     return notes
 
 
-def update_notes(note: Note, title, content):
-    """
-    Update the note with new title and content.
-    """
-    note.title = title
-    note.content = content
+def get_note_by_id(note_id, user_id):
+    """Retrieve a specific note by ID for a user."""
+    return Note.query.filter_by(id=note_id, user_id=user_id).first()
 
-    # Commit the changes to the database
+
+def create_note(title, content, user_id):
+    """Create a new note for a user."""
+    new_note = Note(title=title, content=content, user_id=user_id)
+    db.session.add(new_note)
     db.session.commit()
+    return new_note
 
+
+def update_note(note_id, user_id, title, content):
+    """Update an existing note for a user."""
+    note = get_note_by_id(note_id, user_id)
+    if not note:
+        return None
+    note.title = title if title else note.title
+    note.content = content if content else note.content
+    db.session.commit()
     return note
 
-def delete_note_by_id(note_id: int) -> bool:
-    """
-    Delete a note by its ID.
-    :param note_id: ID of the note to delete
-    :return: True if deletion was successful, False otherwise
-    """
-    note = Note.query.get(note_id)
+
+def set_note_remainder(note_id, user_id, email, remainder_time):
+    """Set a remainder for a specific note."""
+    note = get_note_by_id(note_id, user_id)
+    if not note:
+        return None
+    note.email = email
+    note.remainder_time = remainder_time
+    db.session.commit()
+    return note
+
+
+def delete_note(note_id, user_id):
+    """Delete a note for a user."""
+    note = get_note_by_id(note_id, user_id)
     if note:
         db.session.delete(note)
         db.session.commit()
         return True
     return False
-
-def update_schedule_email(note: Note, email: str, remainder_time: datetime):
-    """
-    Update the note with email and remainder time.
-    """
-    note.email = email
-    note.reminder_time = remainder_time
-
-    db.session.commit()
-
-    return note
