@@ -22,9 +22,9 @@ This is a simple Note Taker application built with Flask, using PostgreSQL for d
     ```
 
 3.Install the required dependencies:
-    ```bash
+   ```bash
     pip install -r requirements.txt
-    ```
+   ```
 
 4.Set up environment variables: Create a .env file with the following:
   ```bash
